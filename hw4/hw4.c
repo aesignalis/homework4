@@ -1,9 +1,33 @@
 #define _GNU_SOURCE
+#include <errno.h>
+#include <pthread.h>
+#include <semaphore.h>
+#include <time.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <sys/types.h>
+#include <sys/wait.h>
 
-_Static_assert(NUM_PRODUCERS * NUMS_PER_PRODUCER == 
-        NUM_CONSUMERS * NUMS_PER_CONSUMER, "produced and consumed counts must match");
-_Static_assert(NUMS_PER_PRODUCERS <= MAX_VALUE + 1,
+#define NUMS_PRODUCERS 10
+#define NUMS_PER_PRODUCER 500
+#define NUMS_CONSUMERS 20
+#define NUMS_PER_CONSUMER 250
+#define MAX_VALUE 1000
+#define PROGRESS_STEP 50
+#define OUTPUT_FILE "average.txt"
+
+_Static_assert(NUMS_PRODUCERS * NUMS_PER_PRODUCER == 
+        NUMS_CONSUMERS * NUMS_PER_CONSUMER, "produced and consumed counts must match");
+_Static_assert(NUMS_PER_PRODUCER <= MAX_VALUE + 1,
     "cannot draw that many unique values from the range");
+
+//primivtives
+static pthread_mutex_t print_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t pipe_write_lock = PTHREAD_MUTEX_INITIALIZER;
+static sem_t producers_done;
+static sem_t pipe_read_sem;
 
 static int write_full(int fd, const void *buf, size_t n){
     const char *p = buf;
@@ -12,8 +36,8 @@ static int write_full(int fd, const void *buf, size_t n){
         if(w<0){
             if(errno==EINTR){
                 continue;
-                return -1;
             }
+        return -1;
         }
         p+=w;
         n-=(size_t)w;
@@ -21,15 +45,15 @@ static int write_full(int fd, const void *buf, size_t n){
     return 0;
 }
 
-static int red_full(int fd, void *buf, size_t n){
-    const char *p = buf;
+static int read_full(int fd, void *buf, size_t n){
+    char *p = buf;
     while(n>0){
-        ssize_t w = read(fd, p, n);
+        ssize_t r = read(fd, p, n);
         if(r<0){
             if(errno==EINTR){
                 continue;
-                return -1;
             }
+            return -1;
         }
         if(r==0) return 1;
         p+=r;
@@ -58,24 +82,32 @@ static void *producer(void *arg){
     for(int i=0;i<=MAX_VALUE; i++){
         shuf[i]=i;
     }
-    for(int i=0; i<NUMS_PER)_PRODUCER;i++){
+    for(int i=0; i<NUMS_PER_PRODUCER;i++){
         int j=i + (int)(rand_r(&seed)%(unsigned)(MAX_VALUE+1-i));
         int temp=shuf[i]; shuf[i]=shuf[j]; shuf[j]=temp;
     }
 
     for(int i=0;i<NUMS_PER_PRODUCER;i++){
         int value=shuf[i];
-    }
 
     pthread_mutex_lock(&pipe_write_lock);
     int rc = write_full(a->write_fd, &value, sizeof value);
     pthread_mutex_unlock(&pipe_write_lock);
     if(rc!=0){
         perror("producer: write");
-        break
-    }
+        break;
+     }
 
-    //bonus progress indicator here?
+    //bonus progress indicator here
+    int written=i+1;
+    if(written%PROGRESS_STEP==0){
+	pthread_mutex_lock(&print_lock);
+	printf("[Producer %2d] progress: %3d%% (%d/%d writes)\n",
+		a->id, written*100 / NUMS_PER_PRODUCER,
+		written, NUMS_PER_PRODUCER);
+	fflush(stdout);
+	pthread_mutex_unlock(&print_lock);
+    }
 }
 
 //finished segment
@@ -128,29 +160,13 @@ static void *consumer(void *arg){
 }
 
 static int child_main(int read_fd){
-    sigset_t set;
-    sigemptyset(&set);
-    sigaddset(&set, SIGUSER1);
+    sem_init(&pipe_read_sem, 0, 1);
 
-    printf("[Child %d] waiting for SIGUSR1 before reading the pipe...\n", (int)getpid());
-    fflush(stdout);
-
-    int sig=0;
-    int err=sigwait(&set, &sig);
-    if(err!=0){
-        fprintf(stderr, "child: sigwait: %s\n", stdrerror(err));
-        return 1;
-    }
-    printf("[Child %d] got SIGUSR1: all numbers, generated, starting consumers\n", (int)getpid());
-    fflush(stdout);
-
-    sem_int(&pipe_read_sem, 0, 1);
-
-    pthread_t tids[NUM_CONSUMERS];
-    consumer_arg_t args[NUM_CONSUMERS];
-    for(int i=0;i<NUM_CONSUMERS;i++){
+    pthread_t tids[NUMS_CONSUMERS];
+    consumer_arg_t args[NUMS_CONSUMERS];
+    for(int i=0;i<NUMS_CONSUMERS;i++){
         args[i].id=i;
-        args[i]=read_fd=read_fd;
+        args[i].read_fd = read_fd;
         args[i].sum=0;
         args[i].all_read=0;
         if(pthread_create(&tids[i], NULL, consumer, &args[i])!=0){
@@ -161,7 +177,7 @@ static int child_main(int read_fd){
 
     int failed=0;
     long total=0;
-    for(int i=0;i<NUM_CONSUMERS; i++){
+    for(int i=0;i<NUMS_CONSUMERS; i++){
         pthread_join(tids[i], NULL);
         total+=args[i].sum;
         if(!args[i].all_read) failed=1;
@@ -171,15 +187,15 @@ static int child_main(int read_fd){
     ssize_t leftover = read(read_fd, &extra, 1);
     if(leftover!=0){
         fprintf(stderr, "child: pipe still had unread data (or error)\n");
-        failed=1
+        failed=1;
     }
     close(read_fd);
 
     //the average calculation
-    double average=(double)total/NUM_CONSUMERS:
+    double average=(double)total/NUMS_CONSUMERS;
 
     fflush(stdout);
-    int fd=open(OUTPUT_FILE, 0_WRONLY | 0_CREAT | 0_TRUNC, 0644);
+    int fd=open(OUTPUT_FILE, O_WRONLY | O_CREAT | O_TRUNC, 0644);
     if(fd<0){
         perror("open " OUTPUT_FILE);
         return 1;
@@ -187,16 +203,16 @@ static int child_main(int read_fd){
     if(dup2(fd, STDOUT_FILENO)<0){
         perror("dup2");
         close(fd);
-        return 1
+        return 1;
     }
-    close(fd)
+    close(fd);
 
     printf("Consumer sums:\n");
-    for(int i=0;i<NUM_CONSUMERS;i++){
+    for(int i=0;i<NUMS_CONSUMERS;i++){
         printf(" consumer %2d: %ld\n", i+1, args[i].sum);
     }
     printf("Total of all sums: %ld\n", total);
-    printf("Average of the %d sums: %.2f\n", NUM_CONSUMERS, average);
+    printf("Average of the %d sums: %.2f\n", NUMS_CONSUMERS, average);
     fflush(stdout);
 
     return failed;
@@ -210,27 +226,11 @@ int main(void){
         return 1;
     }
 
-    //ensure the data fits in the pipe. avoid deadlock
-#ifdef F_SETPIPE_SZ
-    size_t necessary = (size_t)NUM_PRODUCERS * NUMS_PER_PRODUCER * sizeof(int);
-    fcntl(fds[1], F_SETPIPE_SZ, 1<<16);
-    int cap = fcntl(fds[1], F_GETPIPE_SZ);
-    if(cap>0&&(size_t)cap<needed){
-        fprintf(stderr, "pipe capacity (%d) < data size (%zu); would deadlock\n", cap, needed);
-        return 1;
-    }
-#endif
-
-    sigset_t set;
-    sigemptyset(&set);
-    sigaddset(&set, SIGUSR1);
-    pthread_sigmask(SIG_BLOCK, &set, NULL);
-
     fflush(NULL);
     pid_t pid = fork();
     if(pid<0){
         perror("fork");
-        return 1
+        return 1;
     }
 
     //child
@@ -243,9 +243,9 @@ int main(void){
     //parent
     close(fds[0]);
     sem_init(&producers_done, 0, 0);
-    pthread_t tids[NUM_PRODUCERS];
-    producer_arg_t args[NUM_PRODUCERS];
-    for(int i=0l i<NUM_PRODUCERS;i++){
+    pthread_t tids[NUMS_PRODUCERS];
+    producer_arg_t args[NUMS_PRODUCERS];
+    for(int i=0;i<NUMS_PRODUCERS;i++){
         args[i].id=i+1;
         args[i].write_fd=fds[1];
         if(pthread_create(&tids[i], NULL, producer, &args[i]) != 0){
@@ -254,23 +254,19 @@ int main(void){
         }
     }
 
-    for(int i=0;i<NUM_PRODUCERS;i++){
+    for(int i=0;i<NUMS_PRODUCERS;i++){
         sem_wait_retry(&producers_done);
     }
-    for(int i=0;i<NUM_PRODUCERS;i++){
+    for(int i=0;i<NUMS_PRODUCERS;i++){
         pthread_join(tids[i], NULL);
     }
 
     close(fds[1]);
 
     //errors
-    printf("[Parent] all %d numbers generated, sending SIGUSR1 to child %d\n",
-    NUM_PRODUCERS * NUMS_PER_PRODUCER, (int)pid);
+    printf("[Parent] all %d numbers generated\n",
+    NUMS_PRODUCERS * NUMS_PER_PRODUCER);
     fflush(stdout);
-    if(kill(pid, SIGUSR1)==-1){
-        perror("kill");
-        return 1;
-    }
 
     int status=0;
     if(waitpid(pid, &status, 0)==-1){
@@ -278,10 +274,10 @@ int main(void){
         return 1;
     }
 
-    if(WIFEXISTED(status)&&WEXITSTATUS(status)==0){
+    if(WIFEXITED(status)&&WEXITSTATUS(status)==0){
         printf("[Parent] child finished. Average %s\n", OUTPUT_FILE);
         return 0;
     }
-    fprintf(stderr, "[Parent] child failed (status %d)\n, status");
+    fprintf(stderr, "[Parent] child failed (status %d)\n", status);
     return 1;
 }

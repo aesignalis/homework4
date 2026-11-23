@@ -1,0 +1,23 @@
+Consumer sums:
+ consumer  1: 124220
+ consumer  2: 114542
+ consumer  3: 118142
+ consumer  4: 124215
+ consumer  5: 125486
+ consumer  6: 116838
+ consumer  7: 122986
+ consumer  8: 129411
+ consumer  9: 130974
+ consumer 10: 116554
+ consumer 11: 122798
+ consumer 12: 129111
+ consumer 13: 125230
+ consumer 14: 127651
+ consumer 15: 121230
+ consumer 16: 124688
+ consumer 17: 124700
+ consumer 18: 124912
+ consumer 19: 131655
+ consumer 20: 124791
+Total of all sums: 2480134
+Average of the 20 sums: 124006.70
