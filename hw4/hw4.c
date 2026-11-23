@@ -204,5 +204,84 @@ static int child_main(int read_fd){
 
 //parent main
 int main(void){
+    int fds[2];
+    if(pipe(fds)==-1){
+        perror("pipe");
+        return 1;
+    }
 
+    //ensure the data fits in the pipe. avoid deadlock
+#ifdef F_SETPIPE_SZ
+    size_t necessary = (size_t)NUM_PRODUCERS * NUMS_PER_PRODUCER * sizeof(int);
+    fcntl(fds[1], F_SETPIPE_SZ, 1<<16);
+    int cap = fcntl(fds[1], F_GETPIPE_SZ);
+    if(cap>0&&(size_t)cap<needed){
+        fprintf(stderr, "pipe capacity (%d) < data size (%zu); would deadlock\n", cap, needed);
+        return 1;
+    }
+#endif
+
+    sigset_t set;
+    sigemptyset(&set);
+    sigaddset(&set, SIGUSR1);
+    pthread_sigmask(SIG_BLOCK, &set, NULL);
+
+    fflush(NULL);
+    pid_t pid = fork();
+    if(pid<0){
+        perror("fork");
+        return 1
+    }
+
+    //child
+    if(pid==0){
+        close(fds[1]);
+        int rc = child_main(fds[0]);
+        _exit(rc);
+    }
+
+    //parent
+    close(fds[0]);
+    sem_init(&producers_done, 0, 0);
+    pthread_t tids[NUM_PRODUCERS];
+    producer_arg_t args[NUM_PRODUCERS];
+    for(int i=0l i<NUM_PRODUCERS;i++){
+        args[i].id=i+1;
+        args[i].write_fd=fds[1];
+        if(pthread_create(&tids[i], NULL, producer, &args[i]) != 0){
+            perror("pthread_create (producer)");
+            return 1;
+        }
+    }
+
+    for(int i=0;i<NUM_PRODUCERS;i++){
+        sem_wait_retry(&producers_done);
+    }
+    for(int i=0;i<NUM_PRODUCERS;i++){
+        pthread_join(tids[i], NULL);
+    }
+
+    close(fds[1]);
+
+    //errors
+    printf("[Parent] all %d numbers generated, sending SIGUSR1 to child %d\n",
+    NUM_PRODUCERS * NUMS_PER_PRODUCER, (int)pid);
+    fflush(stdout);
+    if(kill(pid, SIGUSR1)==-1){
+        perror("kill");
+        return 1;
+    }
+
+    int status=0;
+    if(waitpid(pid, &status, 0)==-1){
+        perror("waitpid");
+        return 1;
+    }
+
+    if(WIFEXISTED(status)&&WEXITSTATUS(status)==0){
+        printf("[Parent] child finished. Average %s\n", OUTPUT_FILE);
+        return 0;
+    }
+    fprintf(stderr, "[Parent] child failed (status %d)\n, status");
+    return 1;
 }
