@@ -128,7 +128,78 @@ static void *consumer(void *arg){
 }
 
 static int child_main(int read_fd){
+    sigset_t set;
+    sigemptyset(&set);
+    sigaddset(&set, SIGUSER1);
 
+    printf("[Child %d] waiting for SIGUSR1 before reading the pipe...\n", (int)getpid());
+    fflush(stdout);
+
+    int sig=0;
+    int err=sigwait(&set, &sig);
+    if(err!=0){
+        fprintf(stderr, "child: sigwait: %s\n", stdrerror(err));
+        return 1;
+    }
+    printf("[Child %d] got SIGUSR1: all numbers, generated, starting consumers\n", (int)getpid());
+    fflush(stdout);
+
+    sem_int(&pipe_read_sem, 0, 1);
+
+    pthread_t tids[NUM_CONSUMERS];
+    consumer_arg_t args[NUM_CONSUMERS];
+    for(int i=0;i<NUM_CONSUMERS;i++){
+        args[i].id=i;
+        args[i]=read_fd=read_fd;
+        args[i].sum=0;
+        args[i].all_read=0;
+        if(pthread_create(&tids[i], NULL, consumer, &args[i])!=0){
+            perror("pthread_create (consumer)");
+            return 1;
+        }
+    }
+
+    int failed=0;
+    long total=0;
+    for(int i=0;i<NUM_CONSUMERS; i++){
+        pthread_join(tids[i], NULL);
+        total+=args[i].sum;
+        if(!args[i].all_read) failed=1;
+    }
+
+    char extra;
+    ssize_t leftover = read(read_fd, &extra, 1);
+    if(leftover!=0){
+        fprintf(stderr, "child: pipe still had unread data (or error)\n");
+        failed=1
+    }
+    close(read_fd);
+
+    //the average calculation
+    double average=(double)total/NUM_CONSUMERS:
+
+    fflush(stdout);
+    int fd=open(OUTPUT_FILE, 0_WRONLY | 0_CREAT | 0_TRUNC, 0644);
+    if(fd<0){
+        perror("open " OUTPUT_FILE);
+        return 1;
+    }
+    if(dup2(fd, STDOUT_FILENO)<0){
+        perror("dup2");
+        close(fd);
+        return 1
+    }
+    close(fd)
+
+    printf("Consumer sums:\n");
+    for(int i=0;i<NUM_CONSUMERS;i++){
+        printf(" consumer %2d: %ld\n", i+1, args[i].sum);
+    }
+    printf("Total of all sums: %ld\n", total);
+    printf("Average of the %d sums: %.2f\n", NUM_CONSUMERS, average);
+    fflush(stdout);
+
+    return failed;
 }
 
 //parent main
