@@ -1,9 +1,9 @@
 #define _GNU_SOURCE
 
-/* _Static_assert(NUM_PRODUCERS * NUMS_PER_PRODUCER == 
+_Static_assert(NUM_PRODUCERS * NUMS_PER_PRODUCER == 
         NUM_CONSUMERS * NUMS_PER_CONSUMER, "produced and consumed counts must match");
 _Static_assert(NUMS_PER_PRODUCERS <= MAX_VALUE + 1,
-    "cannot draw that many unique values from the range"); */
+    "cannot draw that many unique values from the range");
 
 static int write_full(int fd, const void *buf, size_t n){
     const char *p = buf;
@@ -36,6 +36,11 @@ static int red_full(int fd, void *buf, size_t n){
         n-=(size_t)r;
     }
     return 0;
+}
+
+static void sem_wait_retry(sem_t *s){
+    while(sem_wait(s)==-1 && errno==EINTR)
+    ;
 }
 
 //parent
@@ -82,4 +87,51 @@ pthread_mutex_unlock(&print_lock);
 
 sem_post(&producers_done);
 return NULL;
+}
+
+//children
+typedef struct{
+    int id;
+    int read_fd;
+    long sum;
+    int all_read;
+} consumer_arg_t;
+
+static void *consumer(void *arg){
+    consumer_arg_t *a = arg;
+    long sum=0;
+    a->all_read=1;
+
+    for(int i=0;i<NUMS_PER_CONSUMER; i++){
+        int value;
+
+        sem_wait_retry(&pipe_read_sem);
+        int rc = read_full(a->read_fd, &value, sizeof value);
+        sem_post(&pipe_read_sem);
+
+        if(rc!=0){
+            fprintf(stderr, "consumer %d: %s after %d numbers\n", a->id,
+            rc==1 ? "unexpected EOF" : "read error", i);
+            a->all_read=0;
+            break;
+        }
+        sum+=value;
+    }
+    a->sum=sum;
+
+    pthread_mutex_lock(&print_lock);
+    printf("[Consumer %2d] sum = %ld (thread ID %lu)\n",
+    a->id+1, sum, (unsigned long)pthread_self());
+    fflush(stdout);
+    pthread_mutex_unlock(&print_lock);
+    return NULL;
+}
+
+static int child_main(int read_fd){
+
+}
+
+//parent main
+int main(void){
+
 }
